@@ -26,3 +26,33 @@ def test_similar_party_name_requires_human_review():
     tally = pd.DataFrame({"party": ["Favourite Safety / TDS 2024-25"], "tax": [500]})
     result = reconcile(tds, tally, "party", "tax", "party", "tax", partial_threshold=75)
     assert result.loc[0, "status"] == "Needs review"
+
+
+def test_shortened_tally_ledger_name_becomes_review_candidate():
+    tds = pd.DataFrame({"party": ["3D ENGINEERING AUTOMATION LLP"], "tax": [200]})
+    tally = pd.DataFrame({"party": ["3D ENGINEERING / TDS 2024-25"], "tax": [200]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax")
+    assert result.loc[0, "status"] == "Needs review"
+    assert result.loc[0, "match_confidence"] >= 90
+
+
+def test_same_amount_without_company_similarity_is_not_a_match():
+    tds = pd.DataFrame({"party": ["Alpha Engineering"], "tax": [200]})
+    tally = pd.DataFrame({"party": ["Unrelated Services / TDS 2024-25"], "tax": [200]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax")
+    assert result.loc[0, "status"] == "No match"
+
+
+def test_generic_technology_word_does_not_steal_correct_ledger():
+    tds = pd.DataFrame({"party": ["Clarion Technologies Private Limited", "4FIN Technologies Private Limited"], "tax": [3500, 400]})
+    tally = pd.DataFrame({"party": ["4FIN Technologies / TDS 2024-25"], "tax": [400]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax")
+    assert result.loc[result["tds_party"] == "Clarion Technologies Private Limited", "status"].item() == "No match"
+    assert result.loc[result["tds_party"] == "4FIN Technologies Private Limited", "status"].item() == "Total match"
+
+
+def test_approved_alias_reconciles_different_company_names():
+    tds = pd.DataFrame({"party": ["3D Engineering Automation LLP"], "tax": [200]})
+    tally = pd.DataFrame({"party": ["3D Engineering / TDS 2024-25"], "tax": [200]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax", approved_aliases={"3D Engineering Automation LLP": "3D Engineering / TDS 2024-25"})
+    assert result.loc[0, "status"] == "Approved alias"

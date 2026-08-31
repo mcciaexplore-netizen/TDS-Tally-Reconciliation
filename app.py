@@ -25,6 +25,21 @@ def preview_for_display(frame: pd.DataFrame) -> pd.DataFrame:
     return frame.astype(object).where(frame.notna(), "").astype(str)
 
 
+def parse_aliases(text: str) -> dict[str, str]:
+    """Parse reviewer-approved aliases: Portal company = Tally ledger name."""
+    aliases = {}
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError("Each alias must use: Portal company name = Tally ledger name")
+        portal_name, tally_name = (part.strip() for part in line.split("=", 1))
+        if not portal_name or not tally_name:
+            raise ValueError("Both sides of every alias must contain a company name")
+        aliases[portal_name] = tally_name
+    return aliases
+
+
 def load_source(upload, label: str):
     kind = file_kind(upload)
     if kind == "pdf":
@@ -112,19 +127,28 @@ with map_right:
 st.subheader("Reconcile")
 tolerance = st.number_input("Allowed amount difference", min_value=0.0, value=1.0, step=1.0)
 threshold = st.slider("Partial-match name confidence threshold", 60, 100, 78)
-adjustment_default = f"Adjustment Amount ({financial_year})" if financial_year else "Adjustment Amount"
-adjustment_header = st.text_input("Adjustment column heading for the report", value=adjustment_default, help="Use a date or period name when an adjustment amount will be entered after export.")
+alias_text = st.text_area(
+    "Approved company aliases (optional)",
+    placeholder="Portal company name = Tally ledger name\n3D ENGINEERING AUTOMATION LLP = 3D ENGINEERING / TDS 2024-25",
+    help="Use one confirmed mapping per line. These remain auditable as ‘Approved alias’ matches.",
+)
 required = [tds_mapping["party_name"], tds_mapping["tax_amount"], tally_mapping["party_name"], tally_mapping["tax_amount"]]
 if any(value == "-- Not mapped --" for value in required):
     st.warning("Map Party Name and Tax Amount on both sides to enable reconciliation.")
     st.stop()
 
 if st.button("Approve mapping and reconcile", type="primary"):
+    try:
+        approved_aliases = parse_aliases(alias_text)
+    except ValueError as exc:
+        st.error(f"Could not read aliases: {exc}")
+        st.stop()
     results = reconcile(
         tds, tally,
         tds_mapping["party_name"], tds_mapping["tax_amount"],
         tally_mapping["party_name"], tally_mapping["tax_amount"],
         tds_tan_col=None if tds_mapping["tan"] == "-- Not mapped --" else tds_mapping["tan"],
+        approved_aliases=approved_aliases,
         amount_tolerance=tolerance, partial_threshold=float(threshold),
     )
     st.session_state["results"] = results
@@ -137,26 +161,16 @@ if "results" in st.session_state:
     results = st.session_state["results"]
     st.subheader("Tally vs Portal Match")
     metrics = results["status"].value_counts()
-    cards = st.columns(5)
-    for card, status in zip(cards, ["Total match", "Partial match", "Needs review", "No match", "No match in TDS"]):
+    cards = st.columns(6)
+    for card, status in zip(cards, ["Total match", "Approved alias", "Partial match", "Needs review", "No match", "No match in TDS"]):
         card.metric(status, int(metrics.get(status, 0)))
     selected_statuses = st.multiselect("Filter statuses", sorted(results["status"].unique()), default=sorted(results["status"].unique()))
-    display = audit_view(results[results["status"].isin(selected_statuses)], adjustment_header)
-    # Excel accepts duplicate blank headings for spacer and notes columns; Streamlit
-    # does not, so use unique display-only labels in the browser preview.
-    preview_display = display.copy()
-    preview_display.columns = [
-        "TAN Number (Portal)", "Name of Company (Portal)", "Name of Company (Tally)",
-        "Total TDS Deposited Rs. (Portal)", "Debit Amount Rs. (Tally)", "Match Status",
-        adjustment_header, " ", "difference", "Notes",
-    ]
-    st.dataframe(preview_display, width="stretch", height=420, column_config={
+    display = audit_view(results[results["status"].isin(selected_statuses)])
+    st.dataframe(display, width="stretch", height=420, column_config={
         "Total TDS Deposited Rs. (Portal)": st.column_config.NumberColumn(format="₹ %0.2f"),
         "Debit Amount Rs. (Tally)": st.column_config.NumberColumn(format="₹ %0.2f"),
-        adjustment_header: st.column_config.NumberColumn(format="₹ %0.2f"),
-        "difference": st.column_config.NumberColumn(format="₹ %0.2f"),
     })
-    report = excel_report(results, st.session_state["mapping_rows"], adjustment_header)
+    report = excel_report(results, st.session_state["mapping_rows"])
     excel_name = report_filename("xlsx", tally_file.name, tds_file.name)
     csv_name = report_filename("csv", tally_file.name, tds_file.name)
     st.download_button("Download Excel audit report", report, excel_name, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
