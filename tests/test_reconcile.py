@@ -62,6 +62,20 @@ def test_spelling_variation_with_two_company_words_is_review_candidate():
     tds = pd.DataFrame({"party": ["Deepak Novochem Technologies Limited"], "tax": [7500]})
     tally = pd.DataFrame({"party": ["Deepak Novachem / TDS 2024-25"], "tax": [7500]})
     result = reconcile(tds, tally, "party", "tax", "party", "tax")
+    assert result.loc[result["tds_party"] == "Deepak Novochem Technologies Limited", "status"].item() == "Needs review"
+
+
+def test_single_distinctive_word_typo_is_review_candidate():
+    tds = pd.DataFrame({"party": ["Brainiac Global Consulting Private Limited"], "tax": [2500]})
+    tally = pd.DataFrame({"party": ["Brainac / TDS 2024-25"], "tax": [2500]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax")
+    assert result.loc[0, "status"] == "Needs review"
+
+
+def test_multiword_typo_is_review_candidate():
+    tds = pd.DataFrame({"party": ["Dar Al Handasah Consultants India Private Limited"], "tax": [700]})
+    tally = pd.DataFrame({"party": ["Dar Ai Handasah / TDS 2024-25"], "tax": [700]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax")
     assert result.loc[0, "status"] == "Needs review"
 
 

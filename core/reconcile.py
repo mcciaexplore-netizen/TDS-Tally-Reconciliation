@@ -54,9 +54,13 @@ def _score(left: str, right: str, left_tokens: set[str], right_tokens: set[str])
         # Short branded ledger names such as GIZ, BPMBC, or 4FIN need an amount
         # check below before becoming a review candidate.
         base = max(base, 82.0)
-    elif len(smaller_tokens) >= 2 and token_similarity >= 88.0:
+    elif (len(common_tokens) >= 2 and token_similarity >= 80.0) or (len(smaller_tokens) >= 2 and token_similarity >= 88.0):
         # Captures spelling slips in otherwise matching word pairs, such as
-        # NOVOCHEM vs NOVACHEM, while requiring more than a generic single word.
+        # DAR AL vs DAR AI, while requiring more than generic common words.
+        base = max(base, token_similarity)
+    elif len(smaller_tokens) == 1 and token_similarity >= 88.0:
+        # A distinctive single-word ledger abbreviation can contain a minor typo,
+        # for example BRAINIAC vs BRAINAC. It remains review-only unless aliased.
         base = max(base, token_similarity)
     elif len(common_tokens) < 2 and base < 90:
         # Prevent generic tails (for example, only "Technologies" in common) from
