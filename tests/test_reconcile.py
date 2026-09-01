@@ -56,3 +56,24 @@ def test_approved_alias_reconciles_different_company_names():
     tally = pd.DataFrame({"party": ["3D Engineering / TDS 2024-25"], "tax": [200]})
     result = reconcile(tds, tally, "party", "tax", "party", "tax", approved_aliases={"3D Engineering Automation LLP": "3D Engineering / TDS 2024-25"})
     assert result.loc[0, "status"] == "Approved alias"
+
+
+def test_spelling_variation_with_two_company_words_is_review_candidate():
+    tds = pd.DataFrame({"party": ["Deepak Novochem Technologies Limited"], "tax": [7500]})
+    tally = pd.DataFrame({"party": ["Deepak Novachem / TDS 2024-25"], "tax": [7500]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax")
+    assert result.loc[0, "status"] == "Needs review"
+
+
+def test_results_are_alphabetical_by_company_name():
+    tds = pd.DataFrame({"party": ["Zulu Limited", "Alpha Limited"], "tax": [10, 20]})
+    tally = pd.DataFrame({"party": ["Zulu / TDS 2024-25", "Alpha / TDS 2024-25"], "tax": [10, 20]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax")
+    assert result["tds_party"].tolist() == ["Alpha Limited", "Zulu Limited"]
+
+
+def test_confirmed_alias_handles_spelling_and_business_name_changes():
+    tds = pd.DataFrame({"party": ["Emcure Pharmaceuticals Limited"], "tax": [68750]})
+    tally = pd.DataFrame({"party": ["Emcure Pharma / 2024-25"], "tax": [68750]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax", approved_aliases={"Emcure Pharmaceuticals Limited": "Emcure Pharma / 2024-25"})
+    assert result.loc[0, "status"] == "Approved alias"

@@ -42,6 +42,7 @@ def _score(left: str, right: str, left_tokens: set[str], right_tokens: set[str])
     base = SequenceMatcher(None, left, right).ratio() * 100
     common_tokens = left_tokens & right_tokens
     smaller_tokens = min(left_tokens, right_tokens, key=len) if left_tokens and right_tokens else set()
+    token_similarity = _token_similarity(left_tokens, right_tokens)
     # Tally ledger names often abbreviate a longer legal company name. A meaningful
     # normalized prefix/substring is a strong review candidate (for example,
     # `3DENGINEERING` inside `3DENGINEERINGAUTOMATION`), but remains non-exact.
@@ -53,11 +54,23 @@ def _score(left: str, right: str, left_tokens: set[str], right_tokens: set[str])
         # Short branded ledger names such as GIZ, BPMBC, or 4FIN need an amount
         # check below before becoming a review candidate.
         base = max(base, 82.0)
+    elif len(smaller_tokens) >= 2 and token_similarity >= 88.0:
+        # Captures spelling slips in otherwise matching word pairs, such as
+        # NOVOCHEM vs NOVACHEM, while requiring more than a generic single word.
+        base = max(base, token_similarity)
     elif len(common_tokens) < 2 and base < 90:
         # Prevent generic tails (for example, only "Technologies" in common) from
         # claiming another company's ledger.
         base = min(base, 75.0)
     return round(base, 1)
+
+
+def _token_similarity(left_tokens: set[str], right_tokens: set[str]) -> float:
+    if not left_tokens or not right_tokens:
+        return 0.0
+    smaller, larger = (left_tokens, right_tokens) if len(left_tokens) <= len(right_tokens) else (right_tokens, left_tokens)
+    scores = [max(SequenceMatcher(None, token, other).ratio() for other in larger) for token in smaller]
+    return round(sum(scores) * 100 / len(scores), 1)
 
 
 def reconcile(
@@ -150,7 +163,11 @@ def reconcile(
             "status": "No match in TDS", "match_confidence": None, "tds_party": None, "tds_tax_amount": None,
             "tds_tan": None, "tally_party": rrow[tally_party_col], "tally_tax_amount": rrow["_amount"], "amount_difference": None,
         })
-    return pd.DataFrame(result)
+    output = pd.DataFrame(result)
+    # Keep every user-facing report deterministic and strictly alphabetical by
+    # portal company; Tally-only rows use their Tally name as the fallback key.
+    output["_sort_name"] = output["tds_party"].fillna(output["tally_party"]).fillna("").astype(str).str.casefold()
+    return output.sort_values("_sort_name", kind="stable").drop(columns="_sort_name").reset_index(drop=True)
 
 
 def _amount_delta(left: float | None, right: float | None) -> float | None:

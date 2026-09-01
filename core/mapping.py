@@ -34,6 +34,13 @@ def suggest_columns(frame: pd.DataFrame) -> dict[str, Suggestion]:
         for column in frame.columns:
             value = _normalize(str(column))
             score = max((100 if _normalize(alias) == value else 80 if _normalize(alias) in value else 0) for alias in aliases)
+            if field == "party_name":
+                # A name/party/ledger is a party identifier; TAN merely belongs to
+                # the same deductor and must never win the suggested party mapping.
+                if any(token in value.split() for token in ("name", "party", "particular", "ledger", "vendor", "payee")):
+                    score += 20
+                if "tan" in value.split():
+                    score -= 80
             # When two fields are equally clear, prefer the later/more specific source
             # column. In the annual statement this selects `tds_deposited` over the
             # nearby `tax_deducted` field for the final reconciliation amount.

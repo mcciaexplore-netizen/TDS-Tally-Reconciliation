@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 
 from core.ingestion import preview_raw, read_tabular, read_tally_report, suggest_header_row, workbook_sheets
+from core.aliases import load_saved_aliases
 from core.mapping import FIELDS, options, suggest_columns
 from core.naming import detect_financial_year, report_filename
 from core.pdf_parser import parse_annual_tax_statement
@@ -132,6 +133,13 @@ alias_text = st.text_area(
     placeholder="Portal company name = Tally ledger name\n3D ENGINEERING AUTOMATION LLP = 3D ENGINEERING / TDS 2024-25",
     help="Use one confirmed mapping per line. These remain auditable as ‘Approved alias’ matches.",
 )
+try:
+    saved_aliases = load_saved_aliases()
+except ValueError as exc:
+    st.error(f"Could not read saved company aliases: {exc}")
+    st.stop()
+if saved_aliases:
+    st.caption(f"{len(saved_aliases)} locally saved, reviewer-approved company aliases will be applied automatically.")
 required = [tds_mapping["party_name"], tds_mapping["tax_amount"], tally_mapping["party_name"], tally_mapping["tax_amount"]]
 if any(value == "-- Not mapped --" for value in required):
     st.warning("Map Party Name and Tax Amount on both sides to enable reconciliation.")
@@ -139,7 +147,7 @@ if any(value == "-- Not mapped --" for value in required):
 
 if st.button("Approve mapping and reconcile", type="primary"):
     try:
-        approved_aliases = parse_aliases(alias_text)
+        approved_aliases = {**saved_aliases, **parse_aliases(alias_text)}
     except ValueError as exc:
         st.error(f"Could not read aliases: {exc}")
         st.stop()

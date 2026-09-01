@@ -1,0 +1,6 @@
+from core.aliases import load_saved_aliases
+
+
+def test_saved_aliases_include_user_confirmed_deepak_pair():
+    aliases = load_saved_aliases()
+    assert aliases["DEEPAK NOVOCHEM TECHNOLOGIES LIMITED"] == "Deepak Novachem / Tds 2024-25"
