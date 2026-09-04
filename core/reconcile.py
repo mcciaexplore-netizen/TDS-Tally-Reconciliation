@@ -37,6 +37,18 @@ def as_amount(value: object) -> float | None:
         return None
 
 
+def is_summary_party(value: object) -> bool:
+    """Return True only for workbook summary labels, never a company name.
+
+    Tally exports commonly append `Total` and `Grand Total` rows.  They are
+    report aggregates rather than deductors, so including them creates a
+    misleading reconciliation result.
+    """
+    label = re.sub(r"[^A-Z ]", " ", str(value or "").upper())
+    label = re.sub(r"\s+", " ", label).strip()
+    return label in {"TOTAL", "GRAND TOTAL"}
+
+
 def _score(left: str, right: str, left_tokens: set[str], right_tokens: set[str]) -> float:
     """Score legal-name variations without treating them as automatic matches."""
     base = SequenceMatcher(None, left, right).ratio() * 100
@@ -92,6 +104,10 @@ def reconcile(
     """One-to-one party matching; never silently accepts an ambiguous fuzzy candidate."""
     left = tds.copy().reset_index(names="tds_row")
     right = tally.copy().reset_index(names="tally_row")
+    # Exclude source-report aggregates before any alias, exact, or fuzzy
+    # matching. They must not appear as unmatched entities in final exports.
+    left = left.loc[~left[tds_party_col].map(is_summary_party)].copy()
+    right = right.loc[~right[tally_party_col].map(is_summary_party)].copy()
     left["_display_party"] = left[tds_party_col]
     right["_display_party"] = right[tally_party_col]
     left["_tokens"] = left[tds_party_col].map(_company_tokens)

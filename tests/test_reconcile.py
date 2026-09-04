@@ -1,6 +1,7 @@
 import pandas as pd
 
-from core.reconcile import normalize_party, reconcile
+from core.ingestion import extract_26as_deductor_summaries
+from core.reconcile import is_summary_party, normalize_party, reconcile
 
 
 def test_normalize_removes_tally_suffix_and_company_noise():
@@ -91,3 +92,29 @@ def test_confirmed_alias_handles_spelling_and_business_name_changes():
     tally = pd.DataFrame({"party": ["Emcure Pharma / 2024-25"], "tax": [68750]})
     result = reconcile(tds, tally, "party", "tax", "party", "tax", approved_aliases={"Emcure Pharmaceuticals Limited": "Emcure Pharma / 2024-25"})
     assert result.loc[0, "status"] == "Approved alias"
+
+
+def test_total_and_grand_total_rows_are_excluded_from_reconciliation():
+    tds = pd.DataFrame({"party": ["Acme Limited", "Total"], "tax": [100, 100]})
+    tally = pd.DataFrame({"party": ["ACME / TDS 2024-25", "Grand Total"], "tax": [100, 100]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax")
+    assert len(result) == 1
+    assert result.loc[0, "tds_party"] == "Acme Limited"
+    assert result.loc[0, "status"] == "Total match"
+    assert is_summary_party(" GRAND-TOTAL ")
+
+
+def test_detailed_26as_extracts_only_deductor_total_rows():
+    raw = pd.DataFrame([
+        ["Sr. No.", "Name of Deductor", "TAN of Deductor", "Total Amount Paid / Credited", "Total Tax Deducted#", "Total TDS Deposited"],
+        [3, "DEV ACCELERATOR PRIVATE LIMITED", "AHMD12151G", 14470187, 1483421, 1483421],
+        ["Sr. No.", "Section1", "Transaction Date", "Status of Booking*", "Date of Booking", "TDS Deposited"],
+        [1, "194I(b)", "04-Mar-2024", "F", "25-May-2024", 126804],
+        [2, "194I(b)", "01-Feb-2024", "F", "25-May-2024", 126804],
+        ["Sr. No.", "Name of Deductor", "TAN of Deductor", "Total Amount Paid / Credited", "Total Tax Deducted#", "Total TDS Deposited"],
+        [4, "EURO SAFETY SOLUTIONS PRIVATE LIMITED", "AGRE10828G", 300000, 6000, 6000],
+    ])
+    extracted = extract_26as_deductor_summaries(raw)
+    assert extracted is not None
+    assert extracted["deductor_name"].tolist() == ["DEV ACCELERATOR PRIVATE LIMITED", "EURO SAFETY SOLUTIONS PRIVATE LIMITED"]
+    assert extracted["tan"].tolist() == ["AHMD12151G", "AGRE10828G"]

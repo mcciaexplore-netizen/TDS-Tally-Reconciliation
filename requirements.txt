@@ -1,5 +1,7 @@
 streamlit>=1.38,<2
-pandas>=2.2,<3
+numpy==2.2.6
+pandas==2.2.3
+pyarrow==18.1.0
 pypdf>=5.0,<7
 openpyxl>=3.1,<4
 xlrd>=2.0,<3

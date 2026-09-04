@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from typing import BinaryIO
+import re
 
 import pandas as pd
 
@@ -51,6 +52,70 @@ def read_tally_report(uploaded: BinaryIO, sheet_name: str | None = None, header_
     data = raw.iloc[detail_row + 1 :].copy()
     data.columns = columns
     return data.dropna(how="all").reset_index(drop=True)
+
+
+def _header_text(value: object) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+
+def _summary_columns(row: pd.Series) -> dict[str, int] | None:
+    """Find the six fields in one repeated 26AS deductor-summary header."""
+    found: dict[str, int] = {}
+    for index, value in enumerate(row):
+        text = _header_text(value)
+        if text == "srno":
+            found["sr_no"] = index
+        elif "nameofdeductor" in text:
+            found["deductor_name"] = index
+        elif "tanofdeductor" in text:
+            found["tan"] = index
+        elif "totalamountpaidcredited" in text:
+            found["total_amount_paid"] = index
+        elif "totaltaxdeducted" in text:
+            found["tax_deducted"] = index
+        elif "totaltdsdeposited" in text:
+            found["tds_deposited"] = index
+    required = {"sr_no", "deductor_name", "tan", "total_amount_paid", "tax_deducted", "tds_deposited"}
+    return found if required.issubset(found) else None
+
+
+def extract_26as_deductor_summaries(raw: pd.DataFrame) -> pd.DataFrame | None:
+    """Extract one top-level total row per deductor from a detailed 26AS export.
+
+    A downloaded detailed 26AS workbook repeats a six-field deductor header,
+    then one total row, followed by transaction-level Section/Date rows.  Only
+    that first total row is useful for TDS-to-Tally reconciliation.
+    """
+    records: list[dict[str, object]] = []
+    columns: dict[str, int] | None = None
+    for row_number, row in raw.iterrows():
+        detected = _summary_columns(row)
+        if detected:
+            columns = detected
+            continue
+        if not columns:
+            continue
+        tan = row.iloc[columns["tan"]]
+        # Transaction rows do not contain a TAN. Requiring it avoids extracting
+        # their Sr. No. 1..n records even if the same row has numeric values.
+        tan_text = str(tan or "").strip().upper()
+        if not re.fullmatch(r"[A-Z]{4}\d{5}[A-Z]", tan_text):
+            continue
+        deductor = row.iloc[columns["deductor_name"]]
+        if pd.isna(deductor) or not str(deductor).strip():
+            continue
+        records.append({
+            "sr_no": row.iloc[columns["sr_no"]],
+            "deductor_name": str(deductor).strip(),
+            "tan": tan_text,
+            "total_amount_paid": row.iloc[columns["total_amount_paid"]],
+            "tax_deducted": row.iloc[columns["tax_deducted"]],
+            "tds_deposited": row.iloc[columns["tds_deposited"]],
+            "source_row": row_number + 1,
+        })
+    if not records:
+        return None
+    return pd.DataFrame.from_records(records).drop_duplicates(subset=["sr_no", "tan"], keep="first").reset_index(drop=True)
 
 
 def preview_raw(uploaded: BinaryIO, sheet_name: str | None = None, rows: int = 35) -> pd.DataFrame:

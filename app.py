@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from io import BytesIO
+
 import pandas as pd
 import streamlit as st
 
-from core.ingestion import preview_raw, read_tabular, read_tally_report, suggest_header_row, workbook_sheets
+from core.ingestion import extract_26as_deductor_summaries, preview_raw, read_tabular, read_tally_report, suggest_header_row, workbook_sheets
 from core.aliases import load_saved_aliases
 from core.mapping import FIELDS, options, suggest_columns
 from core.naming import detect_financial_year, report_filename
@@ -13,8 +15,6 @@ from core.reporting import audit_view, excel_report
 
 
 st.set_page_config(page_title="TDS / Tally Reconciliation", page_icon="✓", layout="wide")
-st.title("TDS / Tally Reconciliation")
-st.caption("Runs locally in this browser session. No API key, cloud upload, or permanent file storage.")
 
 
 def file_kind(upload) -> str:
@@ -41,6 +41,47 @@ def parse_aliases(text: str) -> dict[str, str]:
     return aliases
 
 
+SUMMARY_EXPORT_COLUMNS = {
+    "sr_no": "Sr. No.",
+    "deductor_name": "Name of Deductor",
+    "tan": "TAN of Deductor",
+    "total_amount_paid": "Total Amount Paid / Credited",
+    "tax_deducted": "Total Tax Deducted",
+    "tds_deposited": "Total TDS Deposited",
+}
+
+
+def extraction_view(summary: pd.DataFrame) -> pd.DataFrame:
+    """Use the clean, human-readable 26AS Summary column layout for export."""
+    return summary.loc[:, list(SUMMARY_EXPORT_COLUMNS)].rename(columns=SUMMARY_EXPORT_COLUMNS)
+
+
+def summary_excel(summary: pd.DataFrame) -> bytes:
+    """Create a portable extracted 26AS workbook for the next workflow step."""
+    output = BytesIO()
+    display = extraction_view(summary)
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        display.to_excel(writer, sheet_name="26AS Summary", index=False)
+        sheet = writer.sheets["26AS Summary"]
+        workbook = writer.book
+        header = workbook.add_format({"bold": True, "font_color": "#FFFFFF", "bg_color": "#1F4E78", "align": "center", "text_wrap": True, "border": 1})
+        amount = workbook.add_format({"num_format": "#,##0.00"})
+        for index, column in enumerate(display.columns):
+            sheet.write(0, index, column, header)
+        sheet.set_column("A:A", 10)
+        sheet.set_column("B:B", 50)
+        sheet.set_column("C:C", 16)
+        sheet.set_column("D:F", 28, amount)
+        sheet.freeze_panes(1, 0)
+        sheet.autofilter(0, 0, len(display), len(display.columns) - 1)
+    return output.getvalue()
+
+
+def extraction_filename(extension: str, source_name: str) -> str:
+    year = detect_financial_year(source_name) or "Extracted"
+    return f"26AS_Deductor_Summary_{year}.{extension}"
+
+
 def load_source(upload, label: str):
     kind = file_kind(upload)
     if kind == "pdf":
@@ -51,6 +92,50 @@ def load_source(upload, label: str):
     selected_sheet = sheets[0]
     raw = preview_raw(upload, selected_sheet)
     return None, (selected_sheet, raw), suggest_header_row(raw)
+
+
+workflow = st.sidebar.radio(
+    "Workflow",
+    ["1. Extract 26AS totals", "2. Reconcile TDS with Tally"],
+)
+st.sidebar.caption("Step 1 creates a clean one-row-per-deductor file. Step 2 reconciles that file with Tally.")
+
+if workflow == "1. Extract 26AS totals":
+    st.title("Extract 26AS deductor totals")
+    st.caption("Upload a detailed 26AS Excel/CSV file or Annual Tax Statement PDF. Transaction rows under each deductor are ignored.")
+    source_file = st.file_uploader("Upload detailed 26AS statement", type=["pdf", "xlsx", "xls", "csv"], key="extract_source")
+    if source_file is None:
+        st.info("Upload the 26AS source file to create a clean reconciliation-ready summary.")
+        st.stop()
+    try:
+        if file_kind(source_file) == "pdf":
+            extracted = parse_annual_tax_statement(source_file)
+        else:
+            sheets = [None] if file_kind(source_file) == "csv" else workbook_sheets(source_file)
+            selected_sheet = sheets[0]
+            if len(sheets) > 1:
+                selected_sheet = st.selectbox("26AS worksheet", sheets, key="extract_sheet")
+            raw = preview_raw(source_file, selected_sheet, rows=10000)
+            extracted = extract_26as_deductor_summaries(raw)
+            if extracted is None:
+                raise ValueError("No repeated 26AS deductor-summary headers were found. Select the worksheet containing Name of Deductor, TAN of Deductor, and Total TDS Deposited.")
+    except Exception as exc:
+        st.error(f"Could not extract the 26AS summary: {exc}")
+        st.stop()
+    clean_summary = extraction_view(extracted)
+    st.success(f"Extracted {len(clean_summary)} deductor total rows. The Sr. No. 1, 2, 3 transaction rows below each deductor were ignored.")
+    st.dataframe(clean_summary, width="stretch", height=460, column_config={
+        "Total Amount Paid / Credited": st.column_config.NumberColumn(format="₹ %0.2f"),
+        "Total Tax Deducted": st.column_config.NumberColumn(format="₹ %0.2f"),
+        "Total TDS Deposited": st.column_config.NumberColumn(format="₹ %0.2f"),
+    })
+    st.download_button("Download extracted 26AS summary (Excel)", summary_excel(extracted), extraction_filename("xlsx", source_file.name), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("Download extracted 26AS summary (CSV)", clean_summary.to_csv(index=False).encode("utf-8"), extraction_filename("csv", source_file.name), "text/csv")
+    st.info("Next: choose ‘2. Reconcile TDS with Tally’ in the sidebar, then upload this downloaded summary together with the Tally export.")
+    st.stop()
+
+st.title("TDS / Tally Reconciliation")
+st.caption("Runs locally in this browser session. No API key, cloud upload, or permanent file storage.")
 
 
 tds_upload, tally_upload = st.columns(2)
@@ -86,9 +171,15 @@ with left:
         if file_kind(tds_file) != "csv":
             tds_sheet = st.selectbox("TDS worksheet", workbook_sheets(tds_file), key="tds_sheet")
             tds_raw = preview_raw(tds_file, tds_sheet)
-        tds_header = st.number_input("TDS header row (zero-based)", 0, max(0, len(tds_raw) - 1), tds_header, key="tds_header")
-        st.dataframe(preview_for_display(tds_raw), width="stretch")
-        tds = read_tabular(tds_file, tds_sheet, tds_header)
+        extracted_summary = extract_26as_deductor_summaries(tds_raw)
+        if extracted_summary is not None:
+            tds = extracted_summary
+            st.success(f"Detailed 26AS export recognized. Extracted {len(tds)} deductor total rows; transaction rows were ignored.")
+            st.dataframe(tds.head(20), width="stretch")
+        else:
+            tds_header = st.number_input("TDS header row (zero-based)", 0, max(0, len(tds_raw) - 1), tds_header, key="tds_header")
+            st.dataframe(preview_for_display(tds_raw), width="stretch")
+            tds = read_tabular(tds_file, tds_sheet, tds_header)
 with right:
     st.markdown("#### Tally source")
     tally_sheet, tally_raw = tally_book
