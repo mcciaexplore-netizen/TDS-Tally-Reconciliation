@@ -14,6 +14,8 @@ from core.reconcile import reconcile
 from core.reporting import audit_view, excel_report
 
 
+RECONCILIATION_STATE_VERSION = "2026-09-08-input-counts"
+
 st.set_page_config(page_title="TDS / Tally Reconciliation", page_icon="✓", layout="wide")
 
 
@@ -151,10 +153,10 @@ if not (tds_file and tally_file):
 # A Streamlit selectbox keeps its value between reruns.  A selection made for
 # an earlier upload can be invalid for a newly uploaded statement, so reset
 # the mapping and old results whenever either source changes.
-source_fingerprint = (tds_file.name, tds_file.size, tally_file.name, tally_file.size)
+source_fingerprint = (RECONCILIATION_STATE_VERSION, tds_file.name, tds_file.size, tally_file.name, tally_file.size)
 if st.session_state.get("_reconciliation_source_fingerprint") != source_fingerprint:
     for key in [
-        "tds_sheet", "tds_header", "tally_sheet", "tally_header", "results", "mapping_rows",
+        "tds_sheet", "tds_header", "tally_sheet", "tally_header", "results", "mapping_rows", "reconciliation_input_counts",
         *[f"TDS_{field}" for field in FIELDS],
         *[f"Tally_{field}" for field in FIELDS],
     ]:
@@ -269,10 +271,18 @@ if st.button("Approve mapping and reconcile", type="primary"):
         {"canonical_field": field, "tds_column": tds_mapping[field], "tally_column": tally_mapping[field]}
         for field in FIELDS
     ]
+    st.session_state["reconciliation_input_counts"] = {"tds": len(tds), "tally": len(tally)}
 
 if "results" in st.session_state:
     results = st.session_state["results"]
     st.subheader("Tally vs Portal Match")
+    input_counts = st.session_state.get("reconciliation_input_counts", {})
+    tds_count = input_counts.get("tds")
+    tally_count = input_counts.get("tally")
+    if isinstance(tds_count, int) and isinstance(tally_count, int):
+        st.caption(f"This result was generated from {tds_count:,} TDS records and {tally_count:,} Tally records.")
+    else:
+        st.caption("This result was generated before input-count tracking. Approve the mapping again to refresh it.")
     metrics = results["status"].value_counts()
     cards = st.columns(6)
     for card, status in zip(cards, ["Total match", "Approved alias", "Partial match", "Needs review", "No match", "No match in TDS"]):
