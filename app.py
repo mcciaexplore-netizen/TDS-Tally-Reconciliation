@@ -5,7 +5,7 @@ from io import BytesIO
 import pandas as pd
 import streamlit as st
 
-from core.ingestion import extract_26as_deductor_summaries, preview_raw, read_tabular, read_tally_report, suggest_header_row, workbook_sheets
+from core.ingestion import extract_26as_deductor_summaries, is_detailed_26as_export, preview_raw, read_tabular, read_tally_report, suggest_header_row, workbook_sheets
 from core.aliases import load_saved_aliases
 from core.mapping import FIELDS, options, suggest_columns
 from core.naming import detect_financial_year, report_filename
@@ -14,7 +14,7 @@ from core.reconcile import reconcile
 from core.reporting import audit_view, excel_report
 
 
-RECONCILIATION_STATE_VERSION = "2026-09-08-input-counts"
+RECONCILIATION_STATE_VERSION = "2026-09-08-direct-summary"
 
 st.set_page_config(page_title="TDS / Tally Reconciliation", page_icon="✓", layout="wide")
 
@@ -189,8 +189,11 @@ with left:
         # is intentionally short, but using it here previously limited a
         # 318-row uploaded summary to the first 34 deductors.
         tds_raw = preview_raw(tds_file, tds_sheet, rows=10000)
-        extracted_summary = extract_26as_deductor_summaries(tds_raw)
-        if extracted_summary is not None:
+        if is_detailed_26as_export(tds_raw):
+            extracted_summary = extract_26as_deductor_summaries(tds_raw)
+            if extracted_summary is None:
+                st.error("The detailed 26AS export could not be converted into deductor totals.")
+                st.stop()
             tds = extracted_summary
             st.success(f"Detailed 26AS export recognized. Extracted {len(tds)} deductor total rows; transaction rows were ignored.")
             st.dataframe(tds.head(20), width="stretch")
@@ -198,6 +201,7 @@ with left:
             tds_header = st.number_input("TDS header row (zero-based)", 0, max(0, len(tds_raw) - 1), tds_header, key="tds_header")
             st.dataframe(preview_for_display(tds_raw), width="stretch")
             tds = read_tabular(tds_file, tds_sheet, tds_header)
+            st.success("Reconciliation-ready 26AS summary recognized. It is used directly without re-extraction.")
 with right:
     st.markdown("#### Tally source")
     tally_sheet, tally_raw = tally_book

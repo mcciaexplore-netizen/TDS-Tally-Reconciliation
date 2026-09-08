@@ -118,6 +118,18 @@ def extract_26as_deductor_summaries(raw: pd.DataFrame) -> pd.DataFrame | None:
     return pd.DataFrame.from_records(records).drop_duplicates(subset=["sr_no", "tan"], keep="first").reset_index(drop=True)
 
 
+def is_detailed_26as_export(raw: pd.DataFrame) -> bool:
+    """Distinguish a transaction-level 26AS export from a clean summary file.
+
+    Reconciliation must not re-extract a summary downloaded from step 1. A
+    detailed export repeats the deductor header for multiple parties, or
+    contains the Section-level transaction heading beneath a deductor header.
+    """
+    summary_headers = sum(_summary_columns(row) is not None for _, row in raw.iterrows())
+    has_detail_heading = any("section" in _header_text(value) for value in raw.to_numpy().flatten())
+    return summary_headers > 1 or (summary_headers == 1 and has_detail_heading)
+
+
 def preview_raw(uploaded: BinaryIO, sheet_name: str | None = None, rows: int = 35) -> pd.DataFrame:
     raw = _source_bytes(uploaded)
     filename = getattr(uploaded, "name", "").lower()

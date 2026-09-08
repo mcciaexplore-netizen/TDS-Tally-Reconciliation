@@ -1,6 +1,6 @@
 import pandas as pd
 
-from core.ingestion import extract_26as_deductor_summaries
+from core.ingestion import extract_26as_deductor_summaries, is_detailed_26as_export
 from core.reconcile import is_summary_party, normalize_party, reconcile
 
 
@@ -123,3 +123,13 @@ def test_detailed_26as_extracts_only_deductor_total_rows():
     assert extracted is not None
     assert extracted["deductor_name"].tolist() == ["DEV ACCELERATOR PRIVATE LIMITED", "EURO SAFETY SOLUTIONS PRIVATE LIMITED"]
     assert extracted["tan"].tolist() == ["AHMD12151G", "AGRE10828G"]
+    assert is_detailed_26as_export(raw)
+
+
+def test_clean_26as_summary_is_not_extracted_again():
+    raw = pd.DataFrame([
+        ["Sr. No.", "Name of Deductor", "TAN of Deductor", "Total Amount Paid / Credited", "Total Tax Deducted", "Total TDS Deposited"],
+        [1, "ACME PRIVATE LIMITED", "PNEA00001A", 10000, 1000, 1000],
+        [2, "BETA PRIVATE LIMITED", "PNEA00002B", 20000, 2000, 2000],
+    ])
+    assert not is_detailed_26as_export(raw)
