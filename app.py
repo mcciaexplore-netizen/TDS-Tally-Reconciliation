@@ -185,7 +185,10 @@ with left:
         tds_sheet, tds_raw = tds_book
         if file_kind(tds_file) != "csv":
             tds_sheet = st.selectbox("TDS worksheet", workbook_sheets(tds_file), key="tds_sheet")
-            tds_raw = preview_raw(tds_file, tds_sheet)
+        # Extraction must inspect the complete worksheet.  The default preview
+        # is intentionally short, but using it here previously limited a
+        # 318-row uploaded summary to the first 34 deductors.
+        tds_raw = preview_raw(tds_file, tds_sheet, rows=10000)
         extracted_summary = extract_26as_deductor_summaries(tds_raw)
         if extracted_summary is not None:
             tds = extracted_summary
