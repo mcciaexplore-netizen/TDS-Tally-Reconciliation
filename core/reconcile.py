@@ -8,12 +8,14 @@ import pandas as pd
 
 def normalize_party(value: object) -> str:
     text = str(value or "").upper()
-    text = re.sub(r"\bTDS\s*\d{2,4}\s*[-/]?\s*\d{2,4}\b", " ", text)
-    text = re.sub(r"\bTD\s*\d{2,4}\s*[-/]?\s*\d{2,4}\b", " ", text)
+    # Some Tally exports omit the separator before a trailing TDS year, for
+    # example `BALIRAM TECHNOLOGIESTDS23-24`.
+    text = re.sub(r"TDS\s*\d{2,4}\s*[-/]?\s*\d{2,4}\b", " ", text)
+    text = re.sub(r"TD\s*\d{2,4}\s*[-/]?\s*\d{2,4}\b", " ", text)
     # Tally commonly abbreviates Private Limited as P.L., P LTD, or P.LTD.
     # Normalize these before removing punctuation so they match portal names.
     text = re.sub(r"\bP(?:\s*\.?\s*L(?:\s*\.?\s*T\s*\.?\s*D)?|\s+LTD)\.?(?=\W|$)", " ", text)
-    text = re.sub(r"\b(THE|M/S|PRIVATE|PVT|LIMITED|LTD|LLP|CORPORATION|CORP|COMPANY)\b", " ", text)
+    text = re.sub(r"\b(THE|M/S|PRIVATE|PVT|LIMITED|LTD|LLP|OPC|CORPORATION|CORP|COMPANY)\b", " ", text)
     return re.sub(r"[^A-Z0-9]", "", text)
 
 
@@ -23,7 +25,7 @@ def _company_tokens(value: object) -> set[str]:
     text = re.sub(r"\bTDS\s*\d{2,4}\s*[-/]?\s*\d{2,4}\b", " ", text)
     text = re.sub(r"\bTD\s*\d{2,4}\s*[-/]?\s*\d{2,4}\b", " ", text)
     ignored = {
-        "THE", "M", "S", "P", "L", "PL", "PRIVATE", "PVT", "LIMITED", "LTD", "LLP", "FY", "TDS", "TD",
+        "THE", "M", "S", "P", "L", "PL", "PRIVATE", "PVT", "LIMITED", "LTD", "LLP", "OPC", "FY", "TDS", "TD",
         "TECHNOLOGY", "TECHNOLOGIES", "SYSTEM", "SYSTEMS", "SERVICE", "SERVICES", "SOLUTION", "SOLUTIONS",
         "COMPANY", "CORPORATION", "CORP", "INDIA", "AND", "OF", "FOR", "TO",
     }
@@ -122,6 +124,13 @@ def reconcile(
     right["_amount"] = right[tally_tax_col].map(as_amount)
     available = set(right.index)
     assigned: dict[int, tuple[int, str, float, float | None]] = {}
+    score_cache: dict[tuple[str, str], float] = {}
+
+    def score_for(lrow, rrow) -> float:
+        key = (lrow["_party"], rrow["_party"])
+        if key not in score_cache:
+            score_cache[key] = _score(lrow["_party"], rrow["_party"], lrow["_tokens"], rrow["_tokens"])
+        return score_cache[key]
     aliases = {normalize_party(portal): normalize_party(tally_name) for portal, tally_name in (approved_aliases or {}).items()}
 
     # Phase 0: apply aliases explicitly approved by the reviewer. These are the
@@ -159,7 +168,7 @@ def reconcile(
     for left_index, lrow in left.loc[~left.index.isin(assigned)].iterrows():
         for right_index in available:
             rrow = right.loc[right_index]
-            score = _score(lrow["_party"], rrow["_party"], lrow["_tokens"], rrow["_tokens"])
+            score = score_for(lrow, rrow)
             delta = _amount_delta(lrow["_amount"], rrow["_amount"])
             if delta is not None and abs(delta) <= amount_tolerance:
                 score = min(99.0, score + 5.0)
@@ -177,7 +186,8 @@ def reconcile(
             rrow = right.loc[right_index]
             result.append(_result_row(lrow, rrow, status, confidence, rrow[tally_party_col], delta))
         else:
-            best_confidence = max((_score(lrow["_party"], right.at[index, "_party"], lrow["_tokens"], right.at[index, "_tokens"]) for index in available), default=0.0)
+            candidate_scores = [score_for(lrow, right.loc[index]) for index in available]
+            best_confidence = max(candidate_scores, default=0.0)
             result.append(_result_row(lrow, None, "No match", best_confidence, None, None))
 
     for index in sorted(available):

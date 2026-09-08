@@ -13,6 +13,10 @@ def test_normalize_handles_tally_private_limited_abbreviations():
     assert normalize_party("Acme Corporation Private Limited") == normalize_party("Acme P LTD / TDS23-24")
 
 
+def test_normalize_handles_compact_tds_suffix_and_opc():
+    assert normalize_party("Baliram Technologies (OPC) Private Limited") == normalize_party("BALIRAM TECHNOLOGIESTDS23-24")
+
+
 def test_exact_party_and_amount_is_total_match():
     tds = pd.DataFrame({"party": ["Acme Private Limited"], "tax": [3500]})
     tally = pd.DataFrame({"party": ["ACME / TDS 2024-25"], "tax": [3500]})
