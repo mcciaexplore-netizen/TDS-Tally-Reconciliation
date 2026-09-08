@@ -10,7 +10,10 @@ def normalize_party(value: object) -> str:
     text = str(value or "").upper()
     text = re.sub(r"\bTDS\s*\d{2,4}\s*[-/]?\s*\d{2,4}\b", " ", text)
     text = re.sub(r"\bTD\s*\d{2,4}\s*[-/]?\s*\d{2,4}\b", " ", text)
-    text = re.sub(r"\b(THE|M/S|PRIVATE|PVT|LIMITED|LTD|LLP)\b", " ", text)
+    # Tally commonly abbreviates Private Limited as P.L., P LTD, or P.LTD.
+    # Normalize these before removing punctuation so they match portal names.
+    text = re.sub(r"\bP(?:\s*\.?\s*L(?:\s*\.?\s*T\s*\.?\s*D)?|\s+LTD)\.?(?=\W|$)", " ", text)
+    text = re.sub(r"\b(THE|M/S|PRIVATE|PVT|LIMITED|LTD|LLP|CORPORATION|CORP|COMPANY)\b", " ", text)
     return re.sub(r"[^A-Z0-9]", "", text)
 
 
@@ -20,9 +23,9 @@ def _company_tokens(value: object) -> set[str]:
     text = re.sub(r"\bTDS\s*\d{2,4}\s*[-/]?\s*\d{2,4}\b", " ", text)
     text = re.sub(r"\bTD\s*\d{2,4}\s*[-/]?\s*\d{2,4}\b", " ", text)
     ignored = {
-        "THE", "M", "S", "PRIVATE", "PVT", "LIMITED", "LTD", "LLP", "FY", "TDS", "TD",
+        "THE", "M", "S", "P", "L", "PL", "PRIVATE", "PVT", "LIMITED", "LTD", "LLP", "FY", "TDS", "TD",
         "TECHNOLOGY", "TECHNOLOGIES", "SYSTEM", "SYSTEMS", "SERVICE", "SERVICES", "SOLUTION", "SOLUTIONS",
-        "COMPANY", "CORPORATION", "INDIA", "AND", "OF", "FOR", "TO",
+        "COMPANY", "CORPORATION", "CORP", "INDIA", "AND", "OF", "FOR", "TO",
     }
     return {token for token in re.findall(r"[A-Z0-9]+", text) if token not in ignored and not re.fullmatch(r"20\d{2}|\d{2}", token)}
 

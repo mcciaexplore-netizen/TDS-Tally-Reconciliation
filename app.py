@@ -148,6 +148,19 @@ if not (tds_file and tally_file):
     st.info("Upload both files to start. TDS can be the Annual Tax Statement PDF; Tally must be Excel or CSV.")
     st.stop()
 
+# A Streamlit selectbox keeps its value between reruns.  A selection made for
+# an earlier upload can be invalid for a newly uploaded statement, so reset
+# the mapping and old results whenever either source changes.
+source_fingerprint = (tds_file.name, tds_file.size, tally_file.name, tally_file.size)
+if st.session_state.get("_reconciliation_source_fingerprint") != source_fingerprint:
+    for key in [
+        "tds_sheet", "tds_header", "tally_sheet", "tally_header", "results", "mapping_rows",
+        *[f"TDS_{field}" for field in FIELDS],
+        *[f"Tally_{field}" for field in FIELDS],
+    ]:
+        st.session_state.pop(key, None)
+    st.session_state["_reconciliation_source_fingerprint"] = source_fingerprint
+
 # Tally filenames commonly carry the financial year; use it first, then TDS.
 financial_year = detect_financial_year(tally_file.name, tds_file.name)
 
@@ -191,6 +204,7 @@ with right:
     tally = read_tally_report(tally_file, tally_sheet, tally_header)
     st.caption("When a Tally Cost Centre Summary split header is detected, the app automatically combines its `Particulars` and `Debit/Credit/Balance` header rows.")
 
+st.info(f"Loaded {len(tds):,} TDS deductor records and {len(tally):,} Tally ledger records. Verify these counts before approving the mapping.")
 st.subheader("Automatic column mapping - verify before continuing")
 st.write("Suggested mappings are generated from headers and data shape. Confirm them here; no reconciliation runs until you approve.")
 tds_suggestions, tally_suggestions = suggest_columns(tds), suggest_columns(tally)
