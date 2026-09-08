@@ -4,7 +4,7 @@ Local-first Streamlit application for reconciling an Annual Tax Statement (PDF, 
 
 ## What it does
 
-- Reads files only in the running browser session; it does not upload them to a cloud service.
+- No API key is required. Files are processed by the Streamlit server: run it on your own computer for confidential TDS/TAN data. Do not upload confidential files to a public deployment.
 - Detects spreadsheet headers and proposes column mappings automatically.
 - Requires a human to verify or amend every suggested mapping before reconciliation.
 - Normalizes party names, ledger suffixes, whitespace, punctuation, and numeric values.
@@ -16,12 +16,12 @@ Local-first Streamlit application for reconciling an Annual Tax Statement (PDF, 
 ```powershell
 py -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-streamlit run app.py
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m streamlit run app.py
 ```
 
 Open the local URL shown by Streamlit. No API keys are needed.
 
 ## Current scope
 
-The supplied Tally `Cost Centre Summary` is an aggregate-by-party report. It is reconciled against PDF deductor totals by party and TDS amount. For voucher-level reconciliation, upload a Tally voucher/register export containing party, voucher number, date, and TDS amount.
+The supplied Tally `Cost Centre Summary` is reconciled against deductor totals by party and TDS amount. When the same party has several Tally lines, the app can aggregate up to eight same-name lines to the portal total and records the source rows in the audit report. Fuzzy name matches are always marked for human review.

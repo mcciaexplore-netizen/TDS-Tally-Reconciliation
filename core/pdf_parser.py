@@ -31,9 +31,17 @@ def parse_annual_tax_statement(uploaded) -> pd.DataFrame:
         r"^\s*(\d+)\s+(.+?)\s+([A-Z]{4}\d{5}[A-Z])\s+(-?[\d,.]+)\s+(-?[\d,.]+)\s+(-?[\d,.]+)\s*$"
     )
     reader = PdfReader(uploaded)
+    pages_with_text = 0
     for page_number, page in enumerate(reader.pages, start=1):
         text = page.extract_text(extraction_mode="layout") or ""
-        for line in text.splitlines():
+        if text.strip():
+            pages_with_text += 1
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        # Some statement PDFs wrap a long deductor name over two physical lines.
+        # Check each line plus its immediate neighbours, but still require TAN and
+        # all three summary amounts to avoid collecting transaction rows.
+        candidates = [" ".join(lines[index : index + width]) for index in range(len(lines)) for width in (1, 2, 3) if index + width <= len(lines)]
+        for line in candidates:
             match = pattern.match(line)
             if not match:
                 continue
@@ -49,5 +57,7 @@ def parse_annual_tax_statement(uploaded) -> pd.DataFrame:
             })
     frame = pd.DataFrame.from_records(records, columns=SUMMARY_COLUMNS)
     if frame.empty:
-        raise ValueError("No Annual Tax Statement deductor summaries were found in this PDF.")
+        if not pages_with_text:
+            raise ValueError("This PDF appears scanned or image-only. Upload the 26AS Excel/CSV export instead; OCR is not used because it can misread TAN and amounts.")
+        raise ValueError("No Annual Tax Statement deductor summaries were found. The PDF layout may differ; use the 26AS Excel/CSV export for a reliable extraction.")
     return frame.drop_duplicates(subset=["sr_no", "tan", "source_page"]).reset_index(drop=True)

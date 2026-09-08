@@ -1,26 +1,38 @@
 from __future__ import annotations
 
 from io import BytesIO
+import hashlib
+import json
 
 import pandas as pd
 import streamlit as st
 
-from core.ingestion import extract_26as_deductor_summaries, is_detailed_26as_export, preview_raw, read_tabular, read_tally_report, suggest_header_row, workbook_sheets
+from core.ingestion import extract_26as_deductor_summaries, is_detailed_26as_export, preview_raw, read_raw, read_tabular, read_tally_report, suggest_header_row, workbook_sheets
 from core.aliases import load_saved_aliases
 from core.mapping import FIELDS, options, suggest_columns
 from core.naming import detect_financial_year, report_filename
 from core.pdf_parser import parse_annual_tax_statement
 from core.reconcile import reconcile
 from core.reporting import audit_view, excel_report
+from core.quality import quality_report
+from core.review_store import export_aliases, load_local_aliases, save_alias
 
 
-RECONCILIATION_STATE_VERSION = "2026-09-08-direct-summary"
+RECONCILIATION_STATE_VERSION = "2026-09-08-reliability-pass"
 
 st.set_page_config(page_title="TDS / Tally Reconciliation", page_icon="✓", layout="wide")
 
 
 def file_kind(upload) -> str:
     return upload.name.lower().rsplit(".", 1)[-1]
+
+
+def file_signature(upload) -> tuple[str, int, str]:
+    """Invalidate results when contents change, even if name and size do not."""
+    upload.seek(0)
+    digest = hashlib.sha256(upload.read()).hexdigest()
+    upload.seek(0)
+    return upload.name, upload.size, digest
 
 
 def preview_for_display(frame: pd.DataFrame) -> pd.DataFrame:
@@ -41,6 +53,19 @@ def parse_aliases(text: str) -> dict[str, str]:
             raise ValueError("Both sides of every alias must contain a company name")
         aliases[portal_name] = tally_name
     return aliases
+
+
+def parse_alias_profile(upload) -> dict[str, str]:
+    """Read a portable reviewer-approved alias profile without server storage."""
+    if upload is None:
+        return {}
+    try:
+        payload = json.loads(upload.getvalue().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Alias profile must be a UTF-8 JSON file of company-name pairs.") from exc
+    if not isinstance(payload, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in payload.items()):
+        raise ValueError("Alias profile must be a JSON object of Portal company names mapped to Tally company names.")
+    return payload
 
 
 SUMMARY_EXPORT_COLUMNS = {
@@ -117,7 +142,7 @@ if workflow == "1. Extract 26AS totals":
             selected_sheet = sheets[0]
             if len(sheets) > 1:
                 selected_sheet = st.selectbox("26AS worksheet", sheets, key="extract_sheet")
-            raw = preview_raw(source_file, selected_sheet, rows=10000)
+            raw = read_raw(source_file, selected_sheet)
             extracted = extract_26as_deductor_summaries(raw)
             if extracted is None:
                 raise ValueError("No repeated 26AS deductor-summary headers were found. Select the worksheet containing Name of Deductor, TAN of Deductor, and Total TDS Deposited.")
@@ -137,7 +162,7 @@ if workflow == "1. Extract 26AS totals":
     st.stop()
 
 st.title("TDS / Tally Reconciliation")
-st.caption("Runs locally in this browser session. No API key, cloud upload, or permanent file storage.")
+st.caption("No API key is required. Files are processed by this Streamlit server; keep the app local when handling confidential TDS/TAN data.")
 
 
 tds_upload, tally_upload = st.columns(2)
@@ -153,7 +178,7 @@ if not (tds_file and tally_file):
 # A Streamlit selectbox keeps its value between reruns.  A selection made for
 # an earlier upload can be invalid for a newly uploaded statement, so reset
 # the mapping and old results whenever either source changes.
-source_fingerprint = (RECONCILIATION_STATE_VERSION, tds_file.name, tds_file.size, tally_file.name, tally_file.size)
+source_fingerprint = (RECONCILIATION_STATE_VERSION, file_signature(tds_file), file_signature(tally_file))
 if st.session_state.get("_reconciliation_source_fingerprint") != source_fingerprint:
     for key in [
         "tds_sheet", "tds_header", "tally_sheet", "tally_header", "results", "mapping_rows", "reconciliation_input_counts",
@@ -188,7 +213,7 @@ with left:
         # Extraction must inspect the complete worksheet.  The default preview
         # is intentionally short, but using it here previously limited a
         # 318-row uploaded summary to the first 34 deductors.
-        tds_raw = preview_raw(tds_file, tds_sheet, rows=10000)
+        tds_raw = read_raw(tds_file, tds_sheet)
         if is_detailed_26as_export(tds_raw):
             extracted_summary = extract_26as_deductor_summaries(tds_raw)
             if extracted_summary is None:
@@ -239,14 +264,33 @@ with map_left:
 with map_right:
     tally_mapping = mapping_picker("Tally", tally, tally_suggestions)
 
+source_quality_has_error = False
+if all(value != "-- Not mapped --" for value in [tds_mapping["party_name"], tds_mapping["tax_amount"], tally_mapping["party_name"], tally_mapping["tax_amount"]]):
+    with st.expander("Source quality checks", expanded=False):
+        tds_checks = pd.DataFrame(quality_report(tds, tds_mapping["party_name"], tds_mapping["tax_amount"], None if tds_mapping["tan"] == "-- Not mapped --" else tds_mapping["tan"]))
+        tally_checks = pd.DataFrame(quality_report(tally, tally_mapping["party_name"], tally_mapping["tax_amount"]))
+        check_left, check_right = st.columns(2)
+        with check_left:
+            st.markdown("**TDS checks**")
+            st.dataframe(tds_checks, width="stretch", hide_index=True)
+        with check_right:
+            st.markdown("**Tally checks**")
+            st.dataframe(tally_checks, width="stretch", hide_index=True)
+        source_quality_has_error = bool((tds_checks.loc[tds_checks["severity"] == "Error", "count"] > 0).any() or (tally_checks.loc[tally_checks["severity"] == "Error", "count"] > 0).any())
+        if source_quality_has_error:
+            st.warning("Blank party-name rows were found. They will be ignored during reconciliation; review the source checks if this was not expected.")
+
 st.subheader("Reconcile")
 tolerance = st.number_input("Allowed amount difference", min_value=0.0, value=1.0, step=1.0)
+relative_tolerance = st.number_input("Allowed percentage difference", min_value=0.0, value=0.0, step=0.1, help="A match is accepted when it is within either the absolute or percentage allowance.")
 threshold = st.slider("Partial-match name confidence threshold", 60, 100, 78)
+max_aggregate_rows = st.slider("Maximum same-party Tally rows to aggregate", 1, 16, 8, help="Use a higher value only when a single deductor is commonly split across many ledger rows.")
 alias_text = st.text_area(
     "Approved company aliases (optional)",
     placeholder="Portal company name = Tally ledger name\n3D ENGINEERING AUTOMATION LLP = 3D ENGINEERING / TDS 2024-25",
     help="Use one confirmed mapping per line. These remain auditable as ‘Approved alias’ matches.",
 )
+alias_profile_file = st.file_uploader("Load approved aliases profile (optional)", type=["json"], help="Use the downloaded profile to reuse confirmed aliases on another computer or after a restart.")
 try:
     saved_aliases = load_saved_aliases()
 except ValueError as exc:
@@ -254,33 +298,72 @@ except ValueError as exc:
     st.stop()
 if saved_aliases:
     st.caption(f"{len(saved_aliases)} locally saved, reviewer-approved company aliases will be applied automatically.")
+local_aliases = load_local_aliases(financial_year)
+if local_aliases:
+    st.caption(f"{len(local_aliases)} reviewer-approved aliases from this computer will be applied for {financial_year or 'all years'}.")
+try:
+    uploaded_aliases = parse_alias_profile(alias_profile_file)
+    typed_aliases_preview = parse_aliases(alias_text)
+except ValueError as exc:
+    st.error(f"Could not read approved aliases: {exc}")
+    st.stop()
+if uploaded_aliases:
+    st.caption(f"{len(uploaded_aliases)} approved aliases loaded from the selected profile.")
+profile_for_download = {**saved_aliases, **local_aliases, **uploaded_aliases, **typed_aliases_preview}
+st.download_button("Download approved aliases profile", json.dumps(profile_for_download, indent=2, sort_keys=True).encode("utf-8"), "tds_tally_approved_aliases.json", "application/json")
 required = [tds_mapping["party_name"], tds_mapping["tax_amount"], tally_mapping["party_name"], tally_mapping["tax_amount"]]
 if any(value == "-- Not mapped --" for value in required):
     st.warning("Map Party Name and Tax Amount on both sides to enable reconciliation.")
     st.stop()
+if tds_mapping["party_name"] == tds_mapping["tax_amount"] or tally_mapping["party_name"] == tally_mapping["tax_amount"]:
+    st.error("Party Name and Tax Amount must be two different columns on each side.")
+    st.stop()
+st.caption("Party Name and Tax Amount drive matching. TAN is retained for audit; Date, Section and Total Amount are optional reference mappings.")
+
+run_signature = json.dumps({
+    "source": source_fingerprint,
+    "tds": tds_mapping,
+    "tally": tally_mapping,
+    "tolerance": tolerance,
+    "relative_tolerance": relative_tolerance,
+    "threshold": threshold,
+    "max_aggregate_rows": max_aggregate_rows,
+    "aliases": [alias_text, uploaded_aliases],
+}, sort_keys=True, default=str)
 
 if st.button("Approve mapping and reconcile", type="primary"):
     try:
-        approved_aliases = {**saved_aliases, **parse_aliases(alias_text)}
+        approved_aliases = {**saved_aliases, **local_aliases, **uploaded_aliases, **typed_aliases_preview}
     except ValueError as exc:
         st.error(f"Could not read aliases: {exc}")
         st.stop()
-    results = reconcile(
-        tds, tally,
-        tds_mapping["party_name"], tds_mapping["tax_amount"],
-        tally_mapping["party_name"], tally_mapping["tax_amount"],
-        tds_tan_col=None if tds_mapping["tan"] == "-- Not mapped --" else tds_mapping["tan"],
-        approved_aliases=approved_aliases,
-        amount_tolerance=tolerance, partial_threshold=float(threshold),
-    )
+    try:
+        results = reconcile(
+            tds, tally,
+            tds_mapping["party_name"], tds_mapping["tax_amount"],
+            tally_mapping["party_name"], tally_mapping["tax_amount"],
+            tds_tan_col=None if tds_mapping["tan"] == "-- Not mapped --" else tds_mapping["tan"],
+            approved_aliases=approved_aliases,
+            amount_tolerance=tolerance, partial_threshold=float(threshold), relative_tolerance_pct=relative_tolerance,
+            max_aggregate_rows=max_aggregate_rows,
+        )
+    except Exception as exc:
+        st.error(f"Reconciliation could not run: {exc}")
+        st.stop()
     st.session_state["results"] = results
     st.session_state["mapping_rows"] = [
         {"canonical_field": field, "tds_column": tds_mapping[field], "tally_column": tally_mapping[field]}
         for field in FIELDS
     ]
     st.session_state["reconciliation_input_counts"] = {"tds": len(tds), "tally": len(tally)}
+    st.session_state["reconciliation_metadata"] = {
+        "financial_year": financial_year or "Not detected", "absolute_tolerance": tolerance,
+        "relative_tolerance_pct": relative_tolerance, "partial_threshold": threshold,
+        "max_aggregate_rows": max_aggregate_rows, "tds_file": tds_file.name, "tally_file": tally_file.name,
+    }
+    st.session_state["reconciliation_run_signature"] = run_signature
 
-if "results" in st.session_state:
+if "results" in st.session_state and st.session_state.get("reconciliation_run_signature") == run_signature:
     results = st.session_state["results"]
     st.subheader("Tally vs Portal Match")
     input_counts = st.session_state.get("reconciliation_input_counts", {})
@@ -294,14 +377,44 @@ if "results" in st.session_state:
     cards = st.columns(6)
     for card, status in zip(cards, ["Total match", "Approved alias", "Partial match", "Needs review", "No match", "No match in TDS"]):
         card.metric(status, int(metrics.get(status, 0)))
+    matched_value = results.loc[results["status"].isin(["Total match", "Approved alias"]), "tds_tax_amount"].sum()
+    portal_value = results["tds_tax_amount"].sum()
+    dashboard_left, dashboard_mid, dashboard_right = st.columns(3)
+    dashboard_left.metric("Portal value reconciled", f"₹ {matched_value:,.2f}")
+    dashboard_mid.metric("Portal value in scope", f"₹ {portal_value:,.2f}")
+    dashboard_right.metric("Exact/approved rate", f"{(100 * metrics.get('Total match', 0) + 100 * metrics.get('Approved alias', 0)) / max(1, len(results[results['tds_party'].notna()])):.1f}%")
     selected_statuses = st.multiselect("Filter statuses", sorted(results["status"].unique()), default=sorted(results["status"].unique()))
-    display = audit_view(results[results["status"].isin(selected_statuses)])
+    tally_amount_label = f"{tally_mapping['tax_amount']} Amount Rs. (Tally)"
+    display = audit_view(results[results["status"].isin(selected_statuses)], tally_amount_label)
     st.dataframe(display, width="stretch", height=420, column_config={
         "Total TDS Deposited Rs. (Portal)": st.column_config.NumberColumn(format="₹ %0.2f"),
-        "Debit Amount Rs. (Tally)": st.column_config.NumberColumn(format="₹ %0.2f"),
+        tally_amount_label: st.column_config.NumberColumn(format="₹ %0.2f"),
     })
-    report = excel_report(results, st.session_state["mapping_rows"])
+    report = excel_report(results, st.session_state["mapping_rows"], tally_amount_label, st.session_state.get("reconciliation_metadata"))
     excel_name = report_filename("xlsx", tally_file.name, tds_file.name)
     csv_name = report_filename("csv", tally_file.name, tds_file.name)
     st.download_button("Download Excel audit report", report, excel_name, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     st.download_button("Download all results CSV", results.to_csv(index=False).encode("utf-8"), csv_name, "text/csv")
+
+    reviewable = results.loc[results["tds_party"].notna() & results["status"].isin(["Needs review", "Partial match", "No match"])].copy()
+    if not reviewable.empty:
+        st.subheader("Reviewer decision queue")
+        st.caption("Confirm a Portal-to-Tally relationship here to store a local, year-aware alias. The app will then require a fresh reconciliation run.")
+        review_labels = {f"Row {index + 1}: {row.tds_party} — {row.status}": row.tds_party for index, row in reviewable.iterrows()}
+        with st.form("review_decision"):
+            selected_review = st.selectbox("Portal company requiring review", list(review_labels))
+            selected_tally = st.selectbox("Verified Tally company", sorted(tally[tally_mapping["party_name"]].dropna().astype(str).unique()))
+            reviewer_name = st.text_input("Reviewer name (optional)")
+            decision_reason = st.text_input("Decision note", value="Verified against source records")
+            save_decision = st.form_submit_button("Save approved alias")
+        if save_decision:
+            save_alias(review_labels[selected_review], selected_tally, financial_year, reviewer_name, decision_reason)
+            st.session_state.pop("results", None)
+            st.success("Approved alias saved locally. Reconcile again to apply it.")
+            st.rerun()
+    local_decisions = export_aliases()
+    if local_decisions:
+        with st.expander("Local reviewer decision audit", expanded=False):
+            st.dataframe(pd.DataFrame(local_decisions), width="stretch", hide_index=True)
+elif "results" in st.session_state:
+    st.info("Settings changed after the last run. Approve mapping and reconcile again before viewing or downloading a result.")

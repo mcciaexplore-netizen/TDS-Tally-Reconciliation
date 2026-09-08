@@ -41,6 +41,13 @@ def suggest_columns(frame: pd.DataFrame) -> dict[str, Suggestion]:
                     score += 20
                 if "tan" in value.split():
                     score -= 80
+            if field == "tax_amount":
+                # The statutory deposited amount is the preferred Portal figure;
+                # Balance is the preferred aggregate Tally figure.
+                if "tds deposited" in value:
+                    score += 25
+                elif value == "balance" or "closing balance" in value:
+                    score += 15
             # When two fields are equally clear, prefer the later/more specific source
             # column. In the annual statement this selects `tds_deposited` over the
             # nearby `tax_deducted` field for the final reconciliation amount.

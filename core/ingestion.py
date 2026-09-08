@@ -7,6 +7,9 @@ import re
 import pandas as pd
 
 
+MAX_PROCESSING_ROWS = 100_000
+
+
 def _source_bytes(uploaded: BinaryIO) -> BytesIO:
     """Copy an uploaded file only to in-memory storage for the active session."""
     uploaded.seek(0)
@@ -22,8 +25,12 @@ def read_tabular(uploaded: BinaryIO, sheet_name: str | None = None, header_row: 
     raw = _source_bytes(uploaded)
     filename = getattr(uploaded, "name", "").lower()
     if filename.endswith(".csv"):
-        return pd.read_csv(raw, header=header_row)
-    return pd.read_excel(raw, sheet_name=sheet_name, header=header_row)
+        frame = pd.read_csv(raw, header=header_row)
+    else:
+        frame = pd.read_excel(raw, sheet_name=sheet_name, header=header_row)
+    if len(frame) > MAX_PROCESSING_ROWS:
+        raise ValueError(f"This sheet contains {len(frame):,} rows. Split it before processing; the safe limit is {MAX_PROCESSING_ROWS:,} rows.")
+    return frame
 
 
 def tally_header_rows(raw: pd.DataFrame) -> tuple[int, int] | None:
@@ -41,9 +48,13 @@ def tally_header_rows(raw: pd.DataFrame) -> tuple[int, int] | None:
 
 def read_tally_report(uploaded: BinaryIO, sheet_name: str | None = None, header_row: int = 0) -> pd.DataFrame:
     """Read normal tables and join split Tally report headings when recognised."""
-    raw = preview_raw(uploaded, sheet_name, rows=10000)
+    # Read the complete report for reconciliation. Previews remain short, but
+    # processing must never silently drop records after an arbitrary row cap.
+    raw = read_raw(uploaded, sheet_name)
     split = tally_header_rows(raw)
-    if not split:
+    # A reviewer-selected header row is authoritative. Only use the special
+    # split Tally layout when they retain its detected primary header row.
+    if not split or header_row != split[0]:
         return read_tabular(uploaded, sheet_name, header_row)
     primary_row, detail_row = split
     primary = raw.iloc[primary_row].fillna("").astype(str).str.strip().tolist()
@@ -51,7 +62,10 @@ def read_tally_report(uploaded: BinaryIO, sheet_name: str | None = None, header_
     columns = [detail_value or primary_value or f"Column {index + 1}" for index, (primary_value, detail_value) in enumerate(zip(primary, detail))]
     data = raw.iloc[detail_row + 1 :].copy()
     data.columns = columns
-    return data.dropna(how="all").reset_index(drop=True)
+    data = data.dropna(how="all").reset_index(drop=True)
+    if len(data) > MAX_PROCESSING_ROWS:
+        raise ValueError(f"This sheet contains {len(data):,} rows. Split it before processing; the safe limit is {MAX_PROCESSING_ROWS:,} rows.")
+    return data
 
 
 def _header_text(value: object) -> str:
@@ -126,7 +140,7 @@ def is_detailed_26as_export(raw: pd.DataFrame) -> bool:
     contains the Section-level transaction heading beneath a deductor header.
     """
     summary_headers = sum(_summary_columns(row) is not None for _, row in raw.iterrows())
-    has_detail_heading = any("section" in _header_text(value) for value in raw.to_numpy().flatten())
+    has_detail_heading = any("section" in _header_text(value) for _, row in raw.iterrows() for value in row)
     return summary_headers > 1 or (summary_headers == 1 and has_detail_heading)
 
 
@@ -136,6 +150,19 @@ def preview_raw(uploaded: BinaryIO, sheet_name: str | None = None, rows: int = 3
     if filename.endswith(".csv"):
         return pd.read_csv(raw, header=None, nrows=rows)
     return pd.read_excel(raw, sheet_name=sheet_name, header=None, nrows=rows)
+
+
+def read_raw(uploaded: BinaryIO, sheet_name: str | None = None) -> pd.DataFrame:
+    """Read a whole source sheet with an explicit safe limit, never truncate."""
+    raw = _source_bytes(uploaded)
+    filename = getattr(uploaded, "name", "").lower()
+    if filename.endswith(".csv"):
+        frame = pd.read_csv(raw, header=None)
+    else:
+        frame = pd.read_excel(raw, sheet_name=sheet_name, header=None)
+    if len(frame) > MAX_PROCESSING_ROWS:
+        raise ValueError(f"This sheet contains {len(frame):,} rows. Split it before processing; the safe limit is {MAX_PROCESSING_ROWS:,} rows.")
+    return frame
 
 
 def suggest_header_row(raw: pd.DataFrame, scan_rows: int = 30) -> int:

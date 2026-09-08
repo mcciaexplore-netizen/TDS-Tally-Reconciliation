@@ -17,6 +17,10 @@ def test_normalize_handles_compact_tds_suffix_and_opc():
     assert normalize_party("Baliram Technologies (OPC) Private Limited") == normalize_party("BALIRAM TECHNOLOGIESTDS23-24")
 
 
+def test_normalize_handles_standalone_year_suffix_and_engineering_abbreviation():
+    assert normalize_party("Towell Engineering / TDS 2022-23") == normalize_party("TOWELL ENGG / 22-23")
+
+
 def test_exact_party_and_amount_is_total_match():
     tds = pd.DataFrame({"party": ["Acme Private Limited"], "tax": [3500]})
     tally = pd.DataFrame({"party": ["ACME / TDS 2024-25"], "tax": [3500]})
@@ -103,6 +107,22 @@ def test_confirmed_alias_handles_spelling_and_business_name_changes():
     assert result.loc[0, "status"] == "Approved alias"
 
 
+def test_confirmed_2022_aliases_match_when_amounts_agree():
+    pairs = {
+        "AUTOCLUSTER DEVELOPMENT AND RESEARCH INSTITUTE": "AUTO CLUSTERDEVELOPMENT & RESEARCH/22-23",
+        "DELOITTE HASKINS AND SELLS LLP": "DELOITTEE HASKING / TDS 2022-23",
+        "EXIDE INDUSTRIES LIMITED": "EXIDE - KOLKATTA - TDS 2022-23",
+        "KORES INDIA LTD PEFCO FOUNDRY DIV": "Kores (India) Limite/TDS 22-23",
+        "OLECTRA GREENTECH LIMITED": "OLECTRA ELECTRONIC/TDS 2022-23",
+        "SYMBIOSIS SOCIETY": "SYMBIOSIS STATISTICAL INSTITUTE/TDS22-23",
+        "TOWELL ENGINEERING INTERNATIONAL LLPTOWELL ENGINEERING INTERNATIONAL LLP": "TOWELL ENGG / TDS 2022-23",
+    }
+    tds = pd.DataFrame({"party": list(pairs), "tax": [100] * len(pairs)})
+    tally = pd.DataFrame({"party": list(pairs.values()), "tax": [100] * len(pairs)})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax", approved_aliases=pairs)
+    assert set(result["status"]) == {"Approved alias"}
+
+
 def test_total_and_grand_total_rows_are_excluded_from_reconciliation():
     tds = pd.DataFrame({"party": ["Acme Limited", "Total"], "tax": [100, 100]})
     tally = pd.DataFrame({"party": ["ACME / TDS 2024-25", "Grand Total"], "tax": [100, 100]})
@@ -111,6 +131,32 @@ def test_total_and_grand_total_rows_are_excluded_from_reconciliation():
     assert result.loc[0, "tds_party"] == "Acme Limited"
     assert result.loc[0, "status"] == "Total match"
     assert is_summary_party(" GRAND-TOTAL ")
+
+
+def test_split_tally_rows_are_aggregated_for_one_deductor():
+    tds = pd.DataFrame({"party": ["Acme Private Limited"], "tax": [1000]})
+    tally = pd.DataFrame({"party": ["ACME / TDS 2024-25", "ACME / TDS 2024-25"], "tax": [400, 600]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax")
+    assert result.loc[0, "status"] == "Total match"
+    assert result.loc[0, "tally_tax_amount"] == 1000
+    assert result.loc[0, "tally_rows"] == "0, 1"
+    assert "aggregated" in result.loc[0, "match_method"]
+
+
+def test_net_total_row_is_excluded_from_reconciliation():
+    tds = pd.DataFrame({"party": ["Net Total", "Acme"], "tax": [999, 100]})
+    tally = pd.DataFrame({"party": ["Acme / TDS 2024-25"], "tax": [100]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax")
+    assert result["tds_party"].tolist() == ["Acme"]
+
+
+def test_duplicate_portal_rows_are_aggregated_to_one_tally_total():
+    tds = pd.DataFrame({"party": ["Acme Private Limited", "ACME PVT LTD"], "tax": [400, 600]})
+    tally = pd.DataFrame({"party": ["ACME / TDS 2024-25"], "tax": [1000]})
+    result = reconcile(tds, tally, "party", "tax", "party", "tax")
+    assert len(result) == 1
+    assert result.loc[0, "status"] == "Total match"
+    assert "aggregated Portal rows" in result.loc[0, "match_method"]
 
 
 def test_detailed_26as_extracts_only_deductor_total_rows():

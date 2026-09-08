@@ -5,7 +5,7 @@ from io import BytesIO
 import pandas as pd
 
 
-def audit_view(results: pd.DataFrame) -> pd.DataFrame:
+def audit_view(results: pd.DataFrame, tally_amount_label: str = "Debit Amount Rs. (Tally)") -> pd.DataFrame:
     """Present results in the portal-versus-Tally audit layout requested by users."""
     status_labels = {
         "Total match": "Matched - Exact (normalized)",
@@ -20,16 +20,19 @@ def audit_view(results: pd.DataFrame) -> pd.DataFrame:
         "Name of Company (Portal)": results["tds_party"],
         "Name of Company (Tally)": results["tally_party"],
         "Total TDS Deposited Rs. (Portal)": results["tds_tax_amount"],
-        "Debit Amount Rs. (Tally)": results["tally_tax_amount"],
+        tally_amount_label: results["tally_tax_amount"],
         "Match Status": results["status"].map(status_labels).fillna(results["status"]),
+        "Match Method": results.get("match_method"),
+        "TDS Source Row": results.get("tds_row"),
+        "Tally Source Row(s)": results.get("tally_rows"),
     })
     return output
 
 
-def excel_report(results: pd.DataFrame, mapping_rows: list[dict[str, str]]) -> bytes:
+def excel_report(results: pd.DataFrame, mapping_rows: list[dict[str, str]], tally_amount_label: str = "Debit Amount Rs. (Tally)", metadata: dict[str, object] | None = None) -> bytes:
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        audit = audit_view(results)
+        audit = audit_view(results, tally_amount_label)
         # First sheet: matches the supplied Tally-vs-Portal audit format.
         audit.to_excel(writer, sheet_name="Tally vs Portal Match", index=False, startrow=2)
         workbook = writer.book
@@ -47,6 +50,8 @@ def excel_report(results: pd.DataFrame, mapping_rows: list[dict[str, str]]) -> b
         audit_sheet.set_column("C:C", 42)
         audit_sheet.set_column("D:E", 24, amount_format)
         audit_sheet.set_column("F:F", 32)
+        audit_sheet.set_column("G:G", 42)
+        audit_sheet.set_column("H:I", 16)
         audit_sheet.freeze_panes(3, 0)
         audit_sheet.autofilter(2, 0, len(audit) + 2, len(audit.columns) - 1)
         audit_sheet.conditional_format(3, 5, len(audit) + 2, 5, {"type": "text", "criteria": "containing", "value": "Exact", "format": workbook.add_format({"bg_color": "#E2F0D9"})})
@@ -55,9 +60,10 @@ def excel_report(results: pd.DataFrame, mapping_rows: list[dict[str, str]]) -> b
         summary = results["status"].value_counts(dropna=False).rename_axis("status").reset_index(name="count")
         summary.to_excel(writer, sheet_name="Summary", index=False)
         results.to_excel(writer, sheet_name="All results", index=False)
-        for status, filename in [("Total match", "Total matches"), ("Partial match", "Partial matches"), ("Needs review", "Needs review"), ("No match", "No match")]:
+        for status, filename in [("Total match", "Total matches"), ("Approved alias", "Approved aliases"), ("Partial match", "Partial matches"), ("Needs review", "Needs review"), ("No match", "No match"), ("No match in TDS", "Tally-only rows")]:
             results[results["status"] == status].to_excel(writer, sheet_name=filename, index=False)
         pd.DataFrame(mapping_rows).to_excel(writer, sheet_name="Approved mapping", index=False)
+        pd.DataFrame([metadata or {}]).T.rename(columns={0: "value"}).rename_axis("setting").reset_index().to_excel(writer, sheet_name="Run audit", index=False)
         for name, worksheet in writer.sheets.items():
             if name == "Tally vs Portal Match":
                 continue
