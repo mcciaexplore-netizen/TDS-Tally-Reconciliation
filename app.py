@@ -4,8 +4,17 @@ from io import BytesIO
 import hashlib
 import json
 
+import importlib
+import sys
+
 import pandas as pd
 import streamlit as st
+
+# Streamlit hot-reloads app.py but keeps core.* cached in sys.modules, so after a
+# deploy a stale core module can lack newly added names (ImportError). Reload them.
+for _name in ("core.aliases", "core.ingestion", "core.mapping", "core.naming", "core.pdf_parser", "core.quality", "core.reconcile", "core.reporting", "core.review_store"):
+    if _name in sys.modules:
+        importlib.reload(sys.modules[_name])
 
 from core.ingestion import extract_26as_deductor_summaries, is_detailed_26as_export, preview_raw, read_raw, read_tabular, read_tally_report, suggest_header_row, workbook_sheets
 from core.aliases import load_saved_aliases
